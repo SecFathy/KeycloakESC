@@ -1,0 +1,37 @@
+services:
+  keycloak:
+    image: quay.io/keycloak/keycloak:${KC_VERSION:-26.8.1}
+    container_name: kc-maprole-lab
+    command: ["start-dev", "--http-port=8080"]
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: ${KC_ADMIN:-admin}
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KC_ADMIN_PASSWORD:-admin}
+      KC_HEALTH_ENABLED: "true"
+      KC_HTTP_ENABLED: "true"
+    ports:
+      - "${KC_PORT:-8080}:8080"
+      # Port 9000 (management/health) is probed by the healthcheck INSIDE the
+      # container, so it does not need a host mapping.
+    healthcheck:
+      # Keycloak 26 image is distroless (no curl/wget); probe health via the JVM.
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/localhost/9000 && echo -e 'GET /health/ready HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3 && cat <&3 | grep -q '\"status\": \"UP\"'"]
+      interval: 5s
+      timeout: 5s
+      retries: 40
+      start_period: 20s
+
+  # Runs once after Keycloak is healthy, builds the vulnerable lab realm, then exits.
+  bootstrap:
+    image: alpine:3.20
+    container_name: kc-maprole-bootstrap
+    depends_on:
+      keycloak:
+        condition: service_healthy
+    environment:
+      BASE: "http://keycloak:8080"
+      ADMIN_USER: ${KC_ADMIN:-admin}
+      ADMIN_PASS: ${KC_ADMIN_PASSWORD:-admin}
+    volumes:
+      - ./bootstrap:/bootstrap:ro
+    entrypoint: ["/bin/sh", "-c", "apk add --no-cache curl jq bash >/dev/null && bash /bootstrap/setup-realm.sh"]
+    restart: "no"
