@@ -1,7 +1,7 @@
 SHELL := /bin/bash
 COMPOSE := docker compose
 
-.PHONY: help up down logs bootstrap check exploit attack-b attack-c attack-d all clean
+.PHONY: help up down logs bootstrap check exploit attack-b attack-c attack-d all reset clean
 
 help:
 	@echo "Keycloak composite map-role escalation lab"
@@ -13,6 +13,7 @@ help:
 	@echo "  make attack-c   Client-role wrapper onto carol"
 	@echo "  make attack-d   Map wrapper onto a group with members"
 	@echo "  make all        Full chain (check + A + B + C + D)"
+	@echo "  make reset      Undo all escalations (keep the lab running)"
 	@echo "  make logs       Follow Keycloak logs"
 	@echo "  make down       Stop containers"
 	@echo "  make clean      Stop and remove volumes"
@@ -34,6 +35,7 @@ attack-b: ; ./poc/kc_composite_maprole_poc.sh attack-b
 attack-c: ; ./poc/kc_composite_maprole_poc.sh attack-c
 attack-d: ; ./poc/kc_composite_maprole_poc.sh attack-d
 all:      ; ./poc/kc_composite_maprole_poc.sh all
+reset:    ; ./poc/kc_composite_maprole_poc.sh cleanup
 
 down:
 	$(COMPOSE) down

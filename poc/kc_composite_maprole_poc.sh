@@ -24,6 +24,7 @@
 #   ./kc_composite_maprole_poc.sh attack-c  # client-role wrapper onto carol
 #   ./kc_composite_maprole_poc.sh attack-d  # map wrapper onto a group w/ members
 #   ./kc_composite_maprole_poc.sh all       # check + exploit + B/C/D
+#   ./kc_composite_maprole_poc.sh cleanup   # (admin) undo every artifact the attacks create
 #
 # Config via env (defaults match the lab bootstrap):
 #   BASE, REALM, ATTACKER_USER, ATTACKER_PASS, ADMIN_USER, ADMIN_PASS, CLIENT_ID
@@ -281,7 +282,60 @@ cmd_attack_d() {
   ok "every current member of a manageable group is escalated without any join"
 }
 
-usage() { sed -n '2,33p' "$0" | sed 's/^#\s\?//'; }
+# =====================================================================
+# cleanup — undo every artifact the attacks create, restoring a pristine
+#           lab WITHOUT a full container recreate. Requires admin creds.
+# =====================================================================
+cmd_cleanup() {
+  banner; info "Authenticating as admin ($ADMIN_USER@$ADMIN_REALM) to clean up..."
+  local AT; AT="$(token "$ADMIN_REALM" "$ADMIN_USER" "$ADMIN_PASS")"
+  [ -n "$AT" ] || { err "admin auth failed"; exit 1; }
+
+  local RM RA S O SPA HID
+  RM="$(get "$AT" "$ADMIN_API/clients?clientId=realm-management" | jq -r '.[0].id')"
+  RA="$(get "$AT" "$ADMIN_API/clients/$RM/roles/realm-admin" | jq -r '.id')"
+  S="$(get "$AT" "$ADMIN_API/roles/$WRAPPER_ROLE" | jq -r '.id // empty')"
+  O="$(get "$AT" "$ADMIN_API/roles/$OUTER_ROLE" | jq -r '.id // empty')"
+  SPA="$(get "$AT" "$ADMIN_API/clients?clientId=$SPA_CLIENT" | jq -r '.[0].id // empty')"
+  [ -n "$SPA" ] && HID="$(get "$AT" "$ADMIN_API/clients/$SPA/roles/$SPA_ROLE" | jq -r '.id // empty')"
+
+  # 1) strip the escalating mappings from users and the group
+  local la bob carol help
+  la="$(user_id "$AT" "$ATTACKER_USER")"; bob="$(user_id "$AT" "$BOB_USER")"
+  carol="$(user_id "$AT" "$CAROL_USER")"; help="$(group_id "$AT" "$HELP_GROUP")"
+  [ -n "$la" ]  && [ -n "$S" ] && status DELETE "$ADMIN_API/users/$la/role-mappings/realm"  "$AT" "[{\"id\":\"$S\",\"name\":\"$WRAPPER_ROLE\"}]" >/dev/null || true
+  [ -n "$bob" ] && [ -n "$O" ] && status DELETE "$ADMIN_API/users/$bob/role-mappings/realm" "$AT" "[{\"id\":\"$O\",\"name\":\"$OUTER_ROLE\"}]" >/dev/null || true
+  [ -n "$carol" ] && [ -n "$SPA" ] && [ -n "${HID:-}" ] && status DELETE "$ADMIN_API/users/$carol/role-mappings/clients/$SPA" "$AT" "[{\"id\":\"$HID\",\"name\":\"$SPA_ROLE\"}]" >/dev/null || true
+  [ -n "$help" ] && [ -n "$S" ] && status DELETE "$ADMIN_API/groups/$help/role-mappings/realm" "$AT" "[{\"id\":\"$S\",\"name\":\"$WRAPPER_ROLE\"}]" >/dev/null || true
+  ok "removed escalating role mappings from $ATTACKER_USER / $BOB_USER / $CAROL_USER / group $HELP_GROUP"
+
+  # 2) remove any extra members the attacks joined (keep original member alice)
+  if [ -n "$help" ]; then
+    get "$AT" "$ADMIN_API/groups/$help/members" | jq -r '.[].id' | while read -r mid; do
+      [ -n "$mid" ] || continue
+      local uname; uname="$(get "$AT" "$ADMIN_API/users/$mid" | jq -r '.username')"
+      [ "$uname" = "$ALICE_USER" ] || status DELETE "$ADMIN_API/users/$mid/groups/$help" "$AT" >/dev/null || true
+    done
+    ok "group '$HELP_GROUP' membership reset to original (alice only)"
+  fi
+
+  # 3) delete attacker-planted objects (name markers: pwned*, rootish, backdoor)
+  get "$AT" "$ADMIN_API/roles" | jq -r '.[]|select(.name|test("^pwned|backdoor";"i"))|.name' | while read -r r; do
+    [ -n "$r" ] && status DELETE "$ADMIN_API/roles/$r" "$AT" >/dev/null && info "deleted role $r" || true
+  done
+  get "$AT" "$ADMIN_API/clients" | jq -r '.[]|select(.clientId|test("^pwned";"i"))|.id' | while read -r cid; do
+    [ -n "$cid" ] && status DELETE "$ADMIN_API/clients/$cid" "$AT" >/dev/null && info "deleted client $cid" || true
+  done
+  get "$AT" "$ADMIN_API/identity-provider/instances" | jq -r '.[]?|select(.alias|test("^pwned";"i"))|.alias' | while read -r a; do
+    [ -n "$a" ] && status DELETE "$ADMIN_API/identity-provider/instances/$a" "$AT" >/dev/null && info "deleted idp $a" || true
+  done
+  get "$AT" "$ADMIN_API/users?max=200" | jq -r '.[]|select(.username|test("^rootish|^pwned|backdoor";"i"))|.id' | while read -r uid; do
+    [ -n "$uid" ] && status DELETE "$ADMIN_API/users/$uid" "$AT" >/dev/null && info "deleted user $uid" || true
+  done
+  hr; ok "cleanup complete — lab restored to pristine (payloads intact, escalations undone)"
+}
+
+usage() { sed -n '2,34p' "$0" | sed 's/^#\s\?//'; }
 
 main() {
   case "${1:-}" in
@@ -291,6 +345,7 @@ main() {
     attack-b) cmd_attack_b ;;
     attack-c) cmd_attack_c ;;
     attack-d) cmd_attack_d ;;
+    cleanup)  cmd_cleanup ;;
     all)      cmd_check || true; echo; cmd_exploit || true; echo; cmd_attack_b || true; echo; cmd_attack_c || true; echo; cmd_attack_d || true ;;
     ""|-h|--help|help) usage ;;
     *) err "unknown command: $1"; usage; exit 1 ;;

